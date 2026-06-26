@@ -8,7 +8,7 @@ import { X, Sun, Moon } from 'lucide-react'
 
 const EMPTY = {
   farmer_id: '', collection_date: todayStr(), shift: 'morning',
-  quantity_liters: '', fat: '', snf: '',
+  quantity_liters: '', fat: '', snf: '', milk_type: 'cow',
 }
 
 export default function CollectionModal({ onClose, onSaved, farmers = [], slabs = [], prefillFarmerId = null }) {
@@ -16,17 +16,33 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [calc, setCalc] = useState({ rate: 0, total: 0, found: false })
+  const [customRates, setCustomRates] = useState(null)
+
+  // Load custom rates
+  useEffect(() => {
+    const loadCustom = async () => {
+      const { data } = await supabase.from('farmers').select('address').eq('code', 'SYSTEM_RATES').maybeSingle()
+      if (data?.address) {
+        try {
+          setCustomRates(JSON.parse(data.address))
+        } catch (e) {
+          console.error(e)
+        }
+      }
+    }
+    loadCustom()
+  }, [])
 
   // Live calculation
   useEffect(() => {
-    const { fat, snf, quantity_liters } = form
+    const { fat, snf, quantity_liters, milk_type } = form
     if (fat && snf && quantity_liters) {
-      const result = calculateMilkRate(parseFloat(fat), parseInt(snf), parseFloat(quantity_liters), slabs)
+      const result = calculateMilkRate(parseFloat(fat), parseInt(snf), parseFloat(quantity_liters), slabs, milk_type, customRates)
       setCalc(result)
     } else {
       setCalc({ rate: 0, total: 0, found: false })
     }
-  }, [form.fat, form.snf, form.quantity_liters, slabs])
+  }, [form.fat, form.snf, form.quantity_liters, form.milk_type, slabs, customRates])
 
   const set = (key, val) => {
     setForm(p => ({ ...p, [key]: val }))
@@ -57,6 +73,7 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
       snf: parseInt(form.snf),
       rate_per_liter: calc.rate,
       total_amount: calc.total,
+      milk_type: form.milk_type,
     }
     const { error: insErr } = await supabase.from('milk_collections').insert(payload)
     if (insErr) { toast.error(insErr.message); setSaving(false); return }
@@ -72,7 +89,14 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
     onClose()
   }
 
-  const snfOptions = slabs.map(s => s.snf_value).sort((a, b) => a - b)
+  let snfOptions = slabs
+    .filter(s => form.milk_type === 'buffalo' ? s.snf_value >= 100 : s.snf_value < 100)
+    .map(s => form.milk_type === 'buffalo' ? s.snf_value - 100 : s.snf_value)
+    .sort((a, b) => a - b)
+
+  if (snfOptions.length === 0) {
+    snfOptions = [82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92]
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -114,6 +138,13 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
               </div>
             </div>
             <div className="form-group">
+              <label className="form-label">Milk Type</label>
+              <select className="input" value={form.milk_type} onChange={e => set('milk_type', e.target.value)}>
+                <option value="cow">Cow</option>
+                <option value="buffalo">Buffalo</option>
+              </select>
+            </div>
+            <div className="form-group">
               <label className="form-label">Quantity (Liters)</label>
               <input type="number" step="0.01" className={`input${errors.quantity_liters ? ' error' : ''}`}
                 placeholder="e.g. 12.50" value={form.quantity_liters}
@@ -127,12 +158,12 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
                 onChange={e => set('fat', e.target.value)} />
               {errors.fat && <span className="form-error">{errors.fat}</span>}
             </div>
-            <div className="form-group" style={{ gridColumn: '1/-1' }}>
+            <div className="form-group">
               <label className="form-label">SNF Value</label>
               <select className={`input${errors.snf ? ' error' : ''}`}
                 value={form.snf} onChange={e => set('snf', e.target.value)}>
                 <option value="">Select SNF…</option>
-                {snfOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                {snfOptions.map(s => <option key={s} value={s}>{s / 10}%</option>)}
               </select>
               {errors.snf && <span className="form-error">{errors.snf}</span>}
             </div>
@@ -163,3 +194,4 @@ export default function CollectionModal({ onClose, onSaved, farmers = [], slabs 
     </div>
   )
 }
+

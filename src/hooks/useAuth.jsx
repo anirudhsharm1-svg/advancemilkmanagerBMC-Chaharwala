@@ -1,5 +1,6 @@
 import { useState, useEffect, createContext, useContext } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { fetchAndCacheCustomRates } from '../utils/rateCalculator'
 
 const AuthContext = createContext(null)
 
@@ -10,10 +11,16 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
+      if (session?.user) {
+        fetchAndCacheCustomRates()
+      }
       setLoading(false)
     })
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
+      if (session?.user) {
+        fetchAndCacheCustomRates()
+      }
     })
     return () => subscription.unsubscribe()
   }, [])

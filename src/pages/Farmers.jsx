@@ -22,9 +22,19 @@ export default function Farmers() {
 
   const fetchFarmers = async () => {
     setLoading(true)
-    const { data, error } = await supabase.from('farmers').select('*').order('name')
+    const { data, error } = await supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES')
     if (error) toast.error('Failed to load farmers')
-    else setFarmers(data || [])
+    else {
+      const sorted = (data || []).sort((a, b) => {
+        const numA = parseInt(a.code, 10)
+        const numB = parseInt(b.code, 10)
+        if (isNaN(numA) && isNaN(numB)) return (a.code || '').localeCompare(b.code || '')
+        if (isNaN(numA)) return 1
+        if (isNaN(numB)) return -1
+        return numA - numB
+      })
+      setFarmers(sorted)
+    }
     setLoading(false)
   }
 
@@ -142,7 +152,7 @@ export default function Farmers() {
           <DataTable
             columns={columns}
             data={farmers}
-            searchKeys={['name', 'phone']}
+            searchKeys={['code', 'name', 'phone']}
             emptyMessage="No farmers registered yet."
             onRowClick={r => navigate(`/farmers/${r.id}`)}
             pageSize={15}

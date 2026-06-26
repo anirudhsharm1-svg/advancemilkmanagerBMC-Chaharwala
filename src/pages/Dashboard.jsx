@@ -45,7 +45,7 @@ export default function Dashboard() {
     setLoading(true)
     const today = todayStr()
     const [farmersRes, todayColRes, allColRes, allPayRes, expRes] = await Promise.all([
-      supabase.from('farmers').select('id, balance'),
+      supabase.from('farmers').select('id, balance').neq('code', 'SYSTEM_RATES'),
       supabase.from('milk_collections').select('quantity_liters, total_amount, shift').eq('collection_date', today),
       supabase.from('milk_collections').select('collection_date, quantity_liters, total_amount, shift').order('collection_date'),
       supabase.from('payments').select('payment_date, amount'),

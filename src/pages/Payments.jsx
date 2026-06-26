@@ -21,7 +21,7 @@ export default function Payments() {
     setLoading(true)
     const [payRes, farmRes] = await Promise.all([
       supabase.from('payments').select('*, farmers(name)').order('payment_date', { ascending: false }),
-      supabase.from('farmers').select('*').order('name'),
+      supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES').order('name'),
     ])
     setPayments(payRes.data || [])
     setFarmers(farmRes.data || [])

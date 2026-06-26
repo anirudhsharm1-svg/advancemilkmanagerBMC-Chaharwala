@@ -24,10 +24,13 @@ export default function Reports() {
   const [passbookData, setPassbookData] = useState(null)
   const [passbookLoading, setPassbookLoading] = useState(false)
   const [showFatSnfKg, setShowFatSnfKg] = useState(false)
+  const [farmerPickerOpen, setFarmerPickerOpen] = useState(false)
+  const [farmerSearch, setFarmerSearch] = useState('')
+  const [selectedFarmerLabel, setSelectedFarmerLabel] = useState('')
 
   useEffect(() => {
     const fetchFarmers = async () => {
-      const { data, error } = await supabase.from('farmers').select('*').order('name')
+      const { data, error } = await supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES').order('name')
       if (!error) setFarmers(data || [])
     }
     fetchFarmers()
@@ -223,7 +226,7 @@ export default function Reports() {
       supabase.from('milk_collections').select('*').like('collection_date', `${prefix}%`),
       supabase.from('payments').select('*').like('payment_date', `${prefix}%`),
       supabase.from('expenses').select('*').like('expense_date', `${prefix}%`),
-      supabase.from('farmers').select('*'),
+      supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES'),
     ])
 
     const collections = colRes.data || []
@@ -523,17 +526,138 @@ export default function Reports() {
         <div>
           <div className="filters-row no-print" style={{ background: 'white', padding: '1rem', borderRadius: 12, border: '1px solid #E5E9EE' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-              <select className="input" style={{ width: 220 }} value={passbookFarmerId} onChange={e => {
-                const fid = e.target.value
-                setPassbookFarmerId(fid)
-                const farmer = farmers.find(f => f.id === fid)
-                if (farmer) {
-                   setShowFatSnfKg(!!farmer.show_fat_snf_kg)
-                }
-              }}>
-                <option value="">Select Farmer</option>
-                {farmers.map(f => <option key={f.id} value={f.id}>{f.name} (Phone: {f.phone})</option>)}
-              </select>
+              {/* Farmer Picker Button */}
+              <div style={{ position: 'relative' }}>
+                <button
+                  type="button"
+                  className="input"
+                  style={{
+                    width: 240, textAlign: 'left', cursor: 'pointer',
+                    color: passbookFarmerId ? '#1E293B' : '#94A3B8',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: 'white'
+                  }}
+                  onClick={() => { setFarmerPickerOpen(true); setFarmerSearch('') }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {selectedFarmerLabel || 'Select Farmer'}
+                  </span>
+                  <span style={{ fontSize: '0.75rem', marginLeft: 4 }}>▼</span>
+                </button>
+              </div>
+
+              {/* Farmer Picker Modal */}
+              {farmerPickerOpen && (
+                <div
+                  onClick={() => setFarmerPickerOpen(false)}
+                  style={{
+                    position: 'fixed', inset: 0, zIndex: 9998,
+                    background: 'rgba(15,30,50,0.45)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center'
+                  }}
+                >
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                      background: 'white', borderRadius: 16, width: 420, maxWidth: '95vw',
+                      boxShadow: '0 20px 60px rgba(0,0,0,0.25)', overflow: 'hidden'
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ background: '#0F6E56', padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'white', fontWeight: 700, fontSize: '1rem' }}>👨‍🌾 Select Farmer</span>
+                      <button
+                        onClick={() => setFarmerPickerOpen(false)}
+                        style={{ background: 'transparent', border: 'none', color: 'white', fontSize: '1.2rem', cursor: 'pointer', lineHeight: 1 }}
+                      >✕</button>
+                    </div>
+
+                    {/* Search */}
+                    <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #E2E8F0' }}>
+                      <input
+                        autoFocus
+                        type="text"
+                        className="input"
+                        placeholder="🔍  Search by name or code..."
+                        value={farmerSearch}
+                        onChange={e => setFarmerSearch(e.target.value)}
+                        style={{ width: '100%', boxSizing: 'border-box' }}
+                      />
+                    </div>
+
+                    {/* Farmer List */}
+                    <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                      {farmers
+                        .filter(f => {
+                          const q = farmerSearch.toLowerCase()
+                          return (
+                            f.name?.toLowerCase().includes(q) ||
+                            (f.code || '').toLowerCase().includes(q) ||
+                            (f.phone || '').includes(q)
+                          )
+                        })
+                        .map((f, i) => (
+                          <div
+                            key={f.id}
+                            onClick={() => {
+                              setPassbookFarmerId(f.id)
+                              setSelectedFarmerLabel(`${f.name} (${f.code || f.phone})`)
+                              if (f.show_fat_snf_kg) setShowFatSnfKg(true)
+                              setFarmerPickerOpen(false)
+                            }}
+                            style={{
+                              padding: '0.7rem 1.25rem',
+                              borderBottom: '1px solid #F1F5F9',
+                              cursor: 'pointer',
+                              background: f.id === passbookFarmerId ? '#ECFDF5' : i % 2 === 0 ? 'white' : '#FAFAFA',
+                              display: 'flex', alignItems: 'center', gap: '0.75rem',
+                              transition: 'background 0.1s'
+                            }}
+                            onMouseEnter={e => { if (f.id !== passbookFarmerId) e.currentTarget.style.background = '#F0FDF4' }}
+                            onMouseLeave={e => { if (f.id !== passbookFarmerId) e.currentTarget.style.background = i % 2 === 0 ? 'white' : '#FAFAFA' }}
+                          >
+                            <div style={{
+                              width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+                              background: f.id === passbookFarmerId ? '#0F6E56' : '#E2E8F0',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontWeight: 700, fontSize: '0.9rem',
+                              color: f.id === passbookFarmerId ? 'white' : '#475569'
+                            }}>
+                              {(f.name || '?').charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#1E293B' }}>{f.name}</div>
+                              <div style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                                Code: <strong>{f.code || 'N/A'}</strong> &nbsp;|&nbsp; 📞 {f.phone}
+                              </div>
+                            </div>
+                            {f.id === passbookFarmerId && (
+                              <span style={{ marginLeft: 'auto', color: '#0F6E56', fontWeight: 700, fontSize: '1.1rem' }}>✓</span>
+                            )}
+                          </div>
+                        ))
+                      }
+                      {farmers.filter(f => {
+                        const q = farmerSearch.toLowerCase()
+                        return f.name?.toLowerCase().includes(q) || (f.code || '').toLowerCase().includes(q) || (f.phone || '').includes(q)
+                      }).length === 0 && (
+                        <div style={{ padding: '2rem', textAlign: 'center', color: '#94A3B8', fontSize: '0.875rem' }}>
+                          No farmers found matching "{farmerSearch}"
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer count */}
+                    <div style={{ padding: '0.6rem 1.25rem', background: '#F8FAFC', borderTop: '1px solid #E2E8F0', fontSize: '0.75rem', color: '#94A3B8', textAlign: 'right' }}>
+                      {farmers.filter(f => {
+                        const q = farmerSearch.toLowerCase()
+                        return f.name?.toLowerCase().includes(q) || (f.code || '').toLowerCase().includes(q) || (f.phone || '').includes(q)
+                      }).length} farmers shown
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <input type="date" className="input" style={{ width: 160 }} value={passbookStartDate} onChange={e => setPassbookStartDate(e.target.value)} />
               <span style={{ color: '#6B7A90', fontWeight: 500 }}>to</span>
               <input type="date" className="input" style={{ width: 160 }} value={passbookEndDate} onChange={e => setPassbookEndDate(e.target.value)} />

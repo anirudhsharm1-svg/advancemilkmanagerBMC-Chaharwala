@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Droplets, CreditCard,
-  BarChart2, Receipt, Settings, LogOut, Truck
+  BarChart2, Receipt, Settings, LogOut, Truck, TableProperties
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import toast from 'react-hot-toast'
@@ -14,7 +14,8 @@ const navItems = [
   { to: '/reports',      label: 'Reports',         icon: BarChart2 },
   { to: '/expenses',     label: 'Expenses',        icon: Receipt },
   { to: '/route-dispatch', label: 'Route Dispatch', icon: Truck },
-  { to: '/snf-settings', label: 'Settings',        icon: Settings },
+  { to: '/rate-list',      label: 'Rate List',       icon: TableProperties },
+  { to: '/snf-settings',  label: 'Settings',         icon: Settings },
 ]
 
 export default function Sidebar({ isOpen, setIsOpen }) {

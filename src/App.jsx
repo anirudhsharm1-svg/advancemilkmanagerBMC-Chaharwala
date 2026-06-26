@@ -11,6 +11,7 @@ import Reports from './pages/Reports'
 import Expenses from './pages/Expenses'
 import SNFSettings from './pages/SNFSettings'
 import RouteDispatch from './pages/RouteDispatch'
+import RateList from './pages/RateList'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -44,6 +45,7 @@ function AppRoutes() {
         <Route path="expenses" element={<Expenses />} />
         <Route path="snf-settings" element={<SNFSettings />} />
         <Route path="route-dispatch" element={<RouteDispatch />} />
+        <Route path="rate-list" element={<RateList />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

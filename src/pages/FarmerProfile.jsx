@@ -29,7 +29,7 @@ export default function FarmerProfile() {
       supabase.from('milk_collections').select('*').eq('farmer_id', id).order('collection_date', { ascending: false }),
       supabase.from('payments').select('*').eq('farmer_id', id).order('payment_date', { ascending: false }),
       supabase.from('snf_slabs').select('*'),
-      supabase.from('farmers').select('*').order('name'),
+      supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES').order('name'),
     ])
     if (farmerRes.error) { toast.error('Farmer not found'); navigate('/farmers'); return }
     setFarmer(farmerRes.data)

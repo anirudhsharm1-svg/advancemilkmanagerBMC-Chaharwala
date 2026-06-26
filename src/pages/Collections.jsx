@@ -10,6 +10,7 @@ export default function Collections() {
   // Master data
   const [farmers, setFarmers] = useState([])
   const [slabs, setSlabs] = useState([])
+  const [customRates, setCustomRates] = useState(null)
   const [loading, setLoading] = useState(true)
 
   // Active Session state
@@ -38,12 +39,20 @@ export default function Collections() {
   // 1. Fetch Master Data
   const loadMasterData = async () => {
     setLoading(true)
-    const [farmRes, slabRes] = await Promise.all([
-      supabase.from('farmers').select('*').order('name'),
+    const [farmRes, slabRes, customRatesRes] = await Promise.all([
+      supabase.from('farmers').select('*').neq('code', 'SYSTEM_RATES').order('name'),
       supabase.from('snf_slabs').select('*'),
+      supabase.from('farmers').select('address').eq('code', 'SYSTEM_RATES').maybeSingle()
     ])
     setFarmers(farmRes.data || [])
     setSlabs(slabRes.data || [])
+    if (customRatesRes.data && customRatesRes.data.address) {
+      try {
+        setCustomRates(JSON.parse(customRatesRes.data.address))
+      } catch (e) {
+        console.error('Failed to parse custom rates:', e)
+      }
+    }
     setLoading(false)
   }
 
@@ -82,14 +91,14 @@ export default function Collections() {
   // 4. Live Rate Calculation
   useEffect(() => {
     if (fat && snf && quantity) {
-      const result = calculateMilkRate(parseFloat(fat), parseInt(snf, 10), parseFloat(quantity), slabs)
+      const result = calculateMilkRate(parseFloat(fat), parseInt(snf, 10), parseFloat(quantity), slabs, milkType, customRates)
       setCalcRate(result.rate)
       setCalcTotal(result.total)
     } else {
       setCalcRate(0)
       setCalcTotal(0)
     }
-  }, [fat, snf, quantity, slabs])
+  }, [fat, snf, quantity, slabs, milkType, customRates])
 
   // Start Session handler
   const startSession = () => {
@@ -142,8 +151,8 @@ export default function Collections() {
       return
     }
 
-    const matchedSlab = slabs.find(s => s.snf_value === parseInt(snf, 10))
-    if (!matchedSlab) {
+    const result = calculateMilkRate(parseFloat(fat), parseInt(snf, 10), parseFloat(quantity), slabs, milkType, customRates)
+    if (!result.found) {
       toast.error('No matching SNF rate slab found in system settings')
       return
     }

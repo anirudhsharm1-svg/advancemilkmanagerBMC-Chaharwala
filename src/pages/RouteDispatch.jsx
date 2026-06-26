@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { formatDate, todayStr } from '../utils/formatters'
 import toast from 'react-hot-toast'
-import { Save, Plus, Trash2, Settings, FileSpreadsheet, Truck, Printer } from 'lucide-react'
+import { Save, Plus, Trash2, Settings, FileSpreadsheet, Truck, Printer, Pencil, Check, X } from 'lucide-react'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 const MILK_TYPES = [
   { value: 'b', label: 'b' },
@@ -17,6 +18,7 @@ export default function RouteDispatch() {
   const [societies, setSocieties] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [masterDataVersion, setMasterDataVersion] = useState(0)
 
   // Filters
   const [selectedRouteId, setSelectedRouteId] = useState('')
@@ -34,6 +36,22 @@ export default function RouteDispatch() {
   const [deleteTargetRoute, setDeleteTargetRoute] = useState(null)
   const [deleteTargetSociety, setDeleteTargetSociety] = useState(null)
 
+  // All Routes Summary tab
+  const [summaryDate, setSummaryDate] = useState(todayStr())
+  const [summaryShift, setSummaryShift] = useState('morning')
+  const [summaryData, setSummaryData] = useState([])
+  const [summaryLoading, setSummaryLoading] = useState(false)
+
+  // Edit Route state
+  const [editingRouteId, setEditingRouteId] = useState(null)
+  const [editRouteName, setEditRouteName] = useState('')
+  const [editRouteCode, setEditRouteCode] = useState('')
+
+  // Edit Society state
+  const [editingSocietyId, setEditingSocietyId] = useState(null)
+  const [editSocietyName, setEditSocietyName] = useState('')
+  const [editSocietyCode, setEditSocietyCode] = useState('')
+
   // Fetch Master Data (Routes, Societies)
   const fetchMasterData = async () => {
     const { data: routeData } = await supabase.from('routes').select('*').order('name')
@@ -45,6 +63,7 @@ export default function RouteDispatch() {
     if (routeData && routeData.length > 0 && !selectedRouteId) {
       setSelectedRouteId(routeData[0].id)
     }
+    setMasterDataVersion(v => v + 1)
   }
 
   // Load / Initialize Spreadsheet Grid
@@ -135,7 +154,7 @@ export default function RouteDispatch() {
     if (selectedRouteId) {
       loadSpreadsheet()
     }
-  }, [selectedRouteId, selectedDate, selectedShift])
+  }, [selectedRouteId, selectedDate, selectedShift, masterDataVersion])
 
   // Live Formula Calculations per cell update
   const calculateRowValues = (qtyStr, fatStr, clrStr) => {
@@ -335,9 +354,35 @@ export default function RouteDispatch() {
     if (error) toast.error(error.message)
     else {
       toast.success('Route deleted')
+      if (selectedRouteId === deleteTargetRoute.id) {
+        setSelectedRouteId('')
+      }
       fetchMasterData()
     }
     setDeleteTargetRoute(null)
+  }
+
+  // Settings: Update Route
+  const handleUpdateRoute = async (id) => {
+    if (!editRouteName.trim() || !editRouteCode.trim()) {
+      toast.error('Route Name and Code are required')
+      return
+    }
+    const { error } = await supabase
+      .from('routes')
+      .update({
+        name: editRouteName.trim(),
+        code: editRouteCode.trim().toUpperCase()
+      })
+      .eq('id', id)
+
+    if (error) {
+      toast.error(error.message)
+    } else {
+      toast.success('Route updated successfully')
+      setEditingRouteId(null)
+      fetchMasterData()
+    }
   }
 
   // Settings: Add Society
@@ -369,6 +414,84 @@ export default function RouteDispatch() {
     setDeleteTargetSociety(null)
   }
 
+  // Settings: Update Society
+  const handleUpdateSociety = async (id) => {
+    if (!editSocietyCode.trim()) {
+      toast.error('Society Code is required')
+      return
+    }
+    const { error } = await supabase
+      .from('societies')
+      .update({
+        name: editSocietyName.trim(),
+        code: editSocietyCode.trim()
+      })
+      .eq('id', id)
+
+    if (error) {
+      toast.error(error.message)
+    } else {
+      toast.success('Society updated successfully')
+      setEditingSocietyId(null)
+      fetchMasterData()
+    }
+  }
+
+  // Fetch All Routes Summary
+  const fetchAllRoutesSummary = async () => {
+    setSummaryLoading(true)
+    const { data, error } = await supabase
+      .from('route_dispatches')
+      .select('*, routes(name, code)')
+      .eq('date', summaryDate)
+      .eq('shift', summaryShift)
+
+    if (error) {
+      toast.error(error.message)
+      setSummaryLoading(false)
+      return
+    }
+
+    // Group by route
+    const byRoute = {}
+    ;(data || []).forEach(row => {
+      const routeId = row.route_id
+      if (!byRoute[routeId]) {
+        byRoute[routeId] = {
+          routeName: row.routes?.name || 'Unknown',
+          routeCode: row.routes?.code || '-',
+          cans: 0, qty: 0,
+          kgFat: 0, kgSnf: 0,
+          weightedFat: 0, weightedClr: 0, weightedSnf: 0
+        }
+      }
+      const r = byRoute[routeId]
+      const qty = parseFloat(row.quantity) || 0
+      r.cans    += parseInt(row.cans) || 0
+      r.qty     += qty
+      r.kgFat   += parseFloat(row.kg_fat) || 0
+      r.kgSnf   += parseFloat(row.kg_snf) || 0
+      r.weightedFat += qty * (parseFloat(row.fat) || 0)
+      r.weightedClr += qty * (parseFloat(row.clr) || 0)
+      r.weightedSnf += qty * (parseFloat(row.snf) || 0)
+    })
+
+    const result = Object.values(byRoute).map(r => ({
+      ...r,
+      avgFat: r.qty > 0 ? r.weightedFat / r.qty : 0,
+      avgClr: r.qty > 0 ? r.weightedClr / r.qty : 0,
+      avgSnf: r.qty > 0 ? r.weightedSnf / r.qty : 0,
+    }))
+
+    setSummaryData(result)
+    setSummaryLoading(false)
+  }
+
+  // Auto-fetch summary when date/shift changes while on summary tab
+  useEffect(() => {
+    if (activeTab === 'summary') fetchAllRoutesSummary()
+  }, [summaryDate, summaryShift, activeTab])
+
   // Sheet calculations totals
   const totalCans = gridRows.reduce((sum, r) => sum + (parseInt(r.cans) || 0), 0)
   const totalQty = gridRows.reduce((sum, r) => sum + (parseFloat(r.quantity) || 0), 0)
@@ -399,6 +522,13 @@ export default function RouteDispatch() {
             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
           >
             <FileSpreadsheet size={16} /> Excel Sheet View
+          </button>
+          <button 
+            className={`btn-${activeTab === 'summary' ? 'primary' : 'secondary'}`} 
+            onClick={() => setActiveTab('summary')}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+          >
+            <Truck size={16} /> All Routes Summary
           </button>
           <button 
             className={`btn-${activeTab === 'settings' ? 'primary' : 'secondary'}`} 
@@ -626,7 +756,111 @@ export default function RouteDispatch() {
         </div>
       )}
 
+      {activeTab === 'summary' && (
+        <div>
+          {/* Controls */}
+          <div className="filters-row no-print" style={{ background: 'white', padding: '1rem', borderRadius: 12, border: '1px solid #E5E9EE', marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748B' }}>Date</label>
+                <input type="date" className="input" style={{ width: 150 }} value={summaryDate} onChange={e => setSummaryDate(e.target.value)} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748B' }}>Shift</label>
+                <select className="input" style={{ width: 130 }} value={summaryShift} onChange={e => setSummaryShift(e.target.value)}>
+                  <option value="morning">Morning</option>
+                  <option value="evening">Evening</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className="btn-secondary" onClick={() => window.print()}>
+                <Printer size={16} /> Print
+              </button>
+              <button className="btn-primary" onClick={fetchAllRoutesSummary} disabled={summaryLoading}>
+                {summaryLoading ? 'Loading...' : '↻ Refresh'}
+              </button>
+            </div>
+          </div>
+
+          {/* Print Header */}
+          <div className="print-only" style={{ textAlign: 'center', marginBottom: '1.5rem', borderBottom: '2px solid #0F6E56', paddingBottom: '1rem' }}>
+            <h1 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#1A2332', margin: '0 0 0.25rem 0' }}>Vitta Sahawa Dairy</h1>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#475569', margin: '0 0 0.25rem 0' }}>All Routes Milk Dispatch Summary</h2>
+            <p style={{ fontSize: '1.0rem', fontWeight: 700, color: '#64748B', margin: 0 }}>Date: {formatDate(summaryDate)} | Shift: {summaryShift.toUpperCase()}</p>
+          </div>
+
+          {summaryLoading ? (
+            <div className="loading-center"><div className="spinner" /></div>
+          ) : summaryData.length === 0 ? (
+            <div className="card" style={{ textAlign: 'center', padding: '3rem', color: '#64748B' }}>
+              No dispatch data found for the selected date and shift.
+            </div>
+          ) : (() => {
+            const grandCans   = summaryData.reduce((s, r) => s + r.cans, 0)
+            const grandQty    = summaryData.reduce((s, r) => s + r.qty, 0)
+            const grandKgFat  = summaryData.reduce((s, r) => s + r.kgFat, 0)
+            const grandKgSnf  = summaryData.reduce((s, r) => s + r.kgSnf, 0)
+            const grandWFat   = summaryData.reduce((s, r) => s + r.weightedFat, 0)
+            const grandWClr   = summaryData.reduce((s, r) => s + r.weightedClr, 0)
+            const grandWSnf   = summaryData.reduce((s, r) => s + r.weightedSnf, 0)
+            const grandAvgFat = grandQty > 0 ? grandWFat / grandQty : 0
+            const grandAvgClr = grandQty > 0 ? grandWClr / grandQty : 0
+            const grandAvgSnf = grandQty > 0 ? grandWSnf / grandQty : 0
+            return (
+              <div className="card" style={{ padding: 0, border: '1px solid #CBD5E1', borderRadius: 8, overflow: 'hidden' }}>
+                <div className="table-container" style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                    <thead>
+                      <tr style={{ background: '#0F6E56', color: 'white', fontWeight: 700 }}>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'left' }}>Route</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'center' }}>Code</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Cans</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Qty (L)</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg FAT</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg CLR</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg SNF</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg FAT</th>
+                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg SNF</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summaryData.map((r, i) => (
+                        <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#F8FAFC' }}>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', fontWeight: 700, color: '#1E293B' }}>{r.routeName}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'center', color: '#475569' }}>{r.routeCode}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.cans}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700 }}>{r.qty.toFixed(1)}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgFat.toFixed(2)}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgClr.toFixed(1)}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgSnf.toFixed(2)}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgFat.toFixed(3)}</td>
+                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgSnf.toFixed(3)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ background: '#1E293B', color: 'white', fontWeight: 800, borderTop: '3px solid #0F6E56' }}>
+                        <td colSpan={2} style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'center', letterSpacing: '0.05em' }}>🏁 GRAND TOTAL</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandCans}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandQty.toFixed(1)}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgFat.toFixed(2)}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgClr.toFixed(1)}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgSnf.toFixed(2)}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgFat.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgSnf.toFixed(3)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       {activeTab === 'settings' && (
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           {/* Route Setup */}
           <div className="card">
@@ -664,24 +898,91 @@ export default function RouteDispatch() {
                   <tr>
                     <th>Route Name</th>
                     <th>Route Code</th>
-                    <th style={{ width: '60px' }}></th>
+                    <th style={{ width: '90px' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {routes.length === 0 ? (
                     <tr><td colSpan={3} style={{ textAlign: 'center', color: '#64748B' }}>No routes configured.</td></tr>
                   ) : (
-                    routes.map(r => (
-                      <tr key={r.id}>
-                        <td><strong>{r.name}</strong></td>
-                        <td>{r.code}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button className="btn-ghost btn-sm" style={{ color: '#DC2626' }} onClick={() => setDeleteTargetRoute(r)}>
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    routes.map(r => {
+                      const isEditing = editingRouteId === r.id
+                      return (
+                        <tr key={r.id}>
+                          <td>
+                            {isEditing ? (
+                              <input 
+                                type="text" 
+                                className="input" 
+                                style={{ height: '32px', fontSize: '0.85rem', padding: '4px 8px' }} 
+                                value={editRouteName} 
+                                onChange={e => setEditRouteName(e.target.value)} 
+                              />
+                            ) : (
+                              <strong>{r.name}</strong>
+                            )}
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <input 
+                                type="text" 
+                                className="input" 
+                                style={{ height: '32px', fontSize: '0.85rem', padding: '4px 8px', width: '80px' }} 
+                                value={editRouteCode} 
+                                onChange={e => setEditRouteCode(e.target.value)} 
+                              />
+                            ) : (
+                              r.code
+                            )}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {isEditing ? (
+                              <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'end' }}>
+                                <button 
+                                  className="btn-primary btn-sm" 
+                                  style={{ padding: '4px', background: '#0F6E56' }} 
+                                  onClick={() => handleUpdateRoute(r.id)}
+                                  title="Save changes"
+                                >
+                                  <Check size={14} />
+                                </button>
+                                <button 
+                                  className="btn-secondary btn-sm" 
+                                  style={{ padding: '4px' }} 
+                                  onClick={() => setEditingRouteId(null)}
+                                  title="Cancel"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'end' }}>
+                                <button 
+                                  className="btn-ghost btn-sm" 
+                                  style={{ color: '#0F6E56', padding: '4px' }} 
+                                  onClick={() => {
+                                    setEditingRouteId(r.id)
+                                    setEditRouteName(r.name)
+                                    setEditRouteCode(r.code)
+                                  }}
+                                  title="Edit Route"
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                                <button 
+                                  className="btn-ghost btn-sm" 
+                                  style={{ color: '#DC2626', padding: '4px' }} 
+                                  onClick={() => setDeleteTargetRoute(r)}
+                                  title="Delete Route"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })
                   )}
                 </tbody>
               </table>
@@ -738,25 +1039,93 @@ export default function RouteDispatch() {
                     <th>Code</th>
                     <th>Society Name</th>
                     <th>Route</th>
-                    <th style={{ width: '60px' }}></th>
+                    <th style={{ width: '90px' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {societies.length === 0 ? (
                     <tr><td colSpan={4} style={{ textAlign: 'center', color: '#64748B' }}>No societies configured.</td></tr>
                   ) : (
-                    societies.map(s => (
-                      <tr key={s.id}>
-                        <td><strong>{s.code}</strong></td>
-                        <td><strong>{s.name}</strong></td>
-                        <td>{s.routes?.name || 'N/A'}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button className="btn-ghost btn-sm" style={{ color: '#DC2626' }} onClick={() => setDeleteTargetSociety(s)}>
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    societies.map(s => {
+                      const isEditingSoc = editingSocietyId === s.id
+                      return (
+                        <tr key={s.id}>
+                          <td>
+                            {isEditingSoc ? (
+                              <input
+                                type="text"
+                                className="input"
+                                style={{ height: '32px', fontSize: '0.85rem', padding: '4px 8px', width: '90px' }}
+                                value={editSocietyCode}
+                                onChange={e => setEditSocietyCode(e.target.value)}
+                              />
+                            ) : (
+                              <strong>{s.code}</strong>
+                            )}
+                          </td>
+                          <td>
+                            {isEditingSoc ? (
+                              <input
+                                type="text"
+                                className="input"
+                                style={{ height: '32px', fontSize: '0.85rem', padding: '4px 8px' }}
+                                value={editSocietyName}
+                                onChange={e => setEditSocietyName(e.target.value)}
+                                placeholder="Society name (optional)"
+                              />
+                            ) : (
+                              <strong>{s.name || <span style={{ color: '#94A3B8', fontStyle: 'italic' }}>—</span>}</strong>
+                            )}
+                          </td>
+                          <td>{s.routes?.name || 'N/A'}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            {isEditingSoc ? (
+                              <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'end' }}>
+                                <button
+                                  className="btn-primary btn-sm"
+                                  style={{ padding: '4px', background: '#0F6E56' }}
+                                  onClick={() => handleUpdateSociety(s.id)}
+                                  title="Save changes"
+                                >
+                                  <Check size={14} />
+                                </button>
+                                <button
+                                  className="btn-secondary btn-sm"
+                                  style={{ padding: '4px' }}
+                                  onClick={() => setEditingSocietyId(null)}
+                                  title="Cancel"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'end' }}>
+                                <button
+                                  className="btn-ghost btn-sm"
+                                  style={{ color: '#0F6E56', padding: '4px' }}
+                                  onClick={() => {
+                                    setEditingSocietyId(s.id)
+                                    setEditSocietyName(s.name || '')
+                                    setEditSocietyCode(s.code)
+                                  }}
+                                  title="Edit Society"
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                                <button
+                                  className="btn-ghost btn-sm"
+                                  style={{ color: '#DC2626', padding: '4px' }}
+                                  onClick={() => setDeleteTargetSociety(s)}
+                                  title="Delete Society"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })
                   )}
                 </tbody>
               </table>
