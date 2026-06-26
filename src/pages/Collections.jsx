@@ -91,7 +91,9 @@ export default function Collections() {
   // 4. Live Rate Calculation
   useEffect(() => {
     if (fat && snf && quantity) {
-      const result = calculateMilkRate(parseFloat(fat), parseInt(snf, 10), parseFloat(quantity), slabs, milkType, customRates)
+      const snfVal = parseFloat(snf)
+      const normalizedSnf = snfVal < 15 ? Math.round(snfVal * 10) : Math.round(snfVal)
+      const result = calculateMilkRate(parseFloat(fat), normalizedSnf, parseFloat(quantity), slabs, milkType, customRates)
       setCalcRate(result.rate)
       setCalcTotal(result.total)
     } else {
@@ -146,12 +148,15 @@ export default function Collections() {
       toast.error('Please enter valid FAT value')
       return
     }
-    if (!snf || isNaN(snf) || parseInt(snf, 10) <= 0) {
+    if (!snf || isNaN(snf) || parseFloat(snf) <= 0) {
       toast.error('Please enter valid SNF value')
       return
     }
 
-    const result = calculateMilkRate(parseFloat(fat), parseInt(snf, 10), parseFloat(quantity), slabs, milkType, customRates)
+    const snfVal = parseFloat(snf)
+    const normalizedSnf = snfVal < 15 ? Math.round(snfVal * 10) : Math.round(snfVal)
+
+    const result = calculateMilkRate(parseFloat(fat), normalizedSnf, parseFloat(quantity), slabs, milkType, customRates)
     if (!result.found) {
       toast.error('No matching SNF rate slab found in system settings')
       return
@@ -164,7 +169,7 @@ export default function Collections() {
       shift: sessionShift,
       quantity_liters: parseFloat(quantity),
       fat: parseFloat(fat),
-      snf: parseInt(snf, 10),
+      snf: normalizedSnf,
       rate_per_liter: calcRate,
       total_amount: calcTotal,
     }
