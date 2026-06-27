@@ -88,19 +88,38 @@ export default function Collections() {
     setSelectedFarmer(match || null)
   }, [memberCode, farmers])
 
-  // 4. Live Rate Calculation
+  // 4. Live Rate Calculation & Auto Milk Type Detection
   useEffect(() => {
     if (fat && snf && quantity) {
+      const fatVal = parseFloat(fat)
       const snfVal = parseFloat(snf)
-      const normalizedSnf = snfVal < 15 ? Math.round(snfVal * 10) : Math.round(snfVal)
-      const result = calculateMilkRate(parseFloat(fat), normalizedSnf, parseFloat(quantity), slabs, milkType, customRates)
-      setCalcRate(result.rate)
-      setCalcTotal(result.total)
+      const qtyVal = parseFloat(quantity)
+
+      if (!isNaN(fatVal)) {
+        const detectedType = fatVal <= 5.0 ? 'cow' : 'buffalo'
+        if (milkType !== detectedType) {
+          setMilkType(detectedType)
+        }
+
+        const normalizedSnf = snfVal < 15 ? Math.round(snfVal * 10) : Math.round(snfVal)
+        const result = calculateMilkRate(fatVal, normalizedSnf, qtyVal, slabs, detectedType, customRates)
+        setCalcRate(result.rate)
+        setCalcTotal(result.total)
+      }
     } else {
       setCalcRate(0)
       setCalcTotal(0)
+      if (fat) {
+        const fatVal = parseFloat(fat)
+        if (!isNaN(fatVal)) {
+          const detectedType = fatVal <= 5.0 ? 'cow' : 'buffalo'
+          if (milkType !== detectedType) {
+            setMilkType(detectedType)
+          }
+        }
+      }
     }
-  }, [fat, snf, quantity, slabs, milkType, customRates])
+  }, [fat, snf, quantity, slabs, customRates, milkType])
 
   // Start Session handler
   const startSession = () => {
@@ -405,14 +424,15 @@ export default function Collections() {
               </div>
 
               <div className="form-group" style={{ margin: 0 }}>
-                <label className="form-label" style={{ fontSize: '0.75rem' }}>Milk Type</label>
+                <label className="form-label" style={{ fontSize: '0.75rem' }}>Milk Type (Auto)</label>
                 <select
                   className="input"
                   value={milkType}
-                  onChange={e => setMilkType(e.target.value)}
+                  disabled
+                  style={{ background: '#F1F5F9', color: '#475569', cursor: 'not-allowed', fontWeight: 600 }}
                 >
-                  <option value="cow">Cow</option>
-                  <option value="buffalo">Buffalo</option>
+                  <option value="cow">Cow (≤ 5.0 FAT)</option>
+                  <option value="buffalo">Buffalo (≥ 5.1 FAT)</option>
                 </select>
               </div>
 

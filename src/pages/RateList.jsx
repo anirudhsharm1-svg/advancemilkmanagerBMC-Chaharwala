@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { calculateMilkRate, fetchAndCacheCustomRates, setCustomRatesCache, getCustomRatesCache } from '../utils/rateCalculator'
 import toast from 'react-hot-toast'
-import { Printer, TableProperties, Save, RefreshCw } from 'lucide-react'
+import { Printer, TableProperties, Save, RefreshCw, Download, Upload } from 'lucide-react'
 
 // SNF columns: 9.2 → 8.2
 const SNF_COLS = [92, 91, 90, 89, 88, 87, 86, 85, 84, 83, 82]
@@ -44,11 +44,11 @@ export default function RateList() {
   const [slabs, setSlabs]           = useState([])
   const [loading, setLoading]       = useState(true)
   const [saving, setSaving]         = useState(false)
-  const [tab, setTab]               = useState('cow')    // 'cow' | 'buffalo'
   const [cowGrid, setCowGrid]       = useState([])       // [fatRow][snfCol]
   const [buffGrid, setBuffGrid]     = useState([])
   const [dirtySet, setDirtySet]     = useState(new Set()) // "fat_snf_type" keys
   const [editCell, setEditCell]     = useState(null)     // {ri, ci}
+  const csvInputRef = useRef(null)
 
   const fetchRates = async () => {
     setLoading(true)
@@ -132,20 +132,144 @@ export default function RateList() {
     toast.success('Printout chart rates loaded! Review and click "Save Changes" to save.')
   }
 
-  const isCow = tab === 'cow'
-  const grid    = isCow ? cowGrid    : buffGrid
-  const setGrid = isCow ? setCowGrid : setBuffGrid
-  const fatRows = isCow ? COW_FAT_ROWS : BUFF_FAT_ROWS
-  const highlight = isCow ? COW_HIGHLIGHT : BUFF_HIGHLIGHT
+  const ALL_FAT_ROWS = [...COW_FAT_ROWS, ...BUFF_FAT_ROWS]
+
+  // Export all rates (Cow & Buffalo) to a single CSV
+  const handleExportCSV = () => {
+    try {
+      const headers = ['Fat/SNF', ...SNF_COLS.map(s => (s / 10).toFixed(1))].join(',')
+      const rows = ALL_FAT_ROWS.map((fat, ri) => {
+        const isRowCow = ri < COW_FAT_ROWS.length
+        const localRi = isRowCow ? ri : ri - COW_FAT_ROWS.length
+        const rowGrid = isRowCow ? cowGrid : buffGrid
+        
+        const rowCells = [fat.toFixed(1)]
+        SNF_COLS.forEach((snf, ci) => {
+          rowCells.push(rowGrid[localRi]?.[ci] ?? '')
+        })
+        return rowCells.join(',')
+      })
+      const csvContent = [headers, ...rows].join('\n')
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.setAttribute('href', url)
+      link.setAttribute('download', `milk_rate_list_combined_${new Date().toISOString().split('T')[0]}.csv`)
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Combined rate list exported as CSV!')
+    } catch (err) {
+      toast.error('Export failed: ' + err.message)
+    }
+  }
+
+  // Import Cow and Buffalo rates from a single CSV
+  const handleImportCSV = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      try {
+        const text = event.target.result
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+        if (lines.length < 2) {
+          toast.error('Invalid CSV file: File is empty or has no data.')
+          return
+        }
+
+        // First line is header, e.g. "Fat/SNF,9.2,9.1,..."
+        const headerParts = lines[0].split(',')
+        const snfValues = headerParts.slice(1).map(h => Math.round(parseFloat(h) * 10))
+
+        const hasValidSNF = snfValues.every(v => !isNaN(v))
+        if (!hasValidSNF) {
+          toast.error('Invalid CSV header: SNF values must be numbers.')
+          return
+        }
+
+        const parsedCowRows = []
+        const parsedBuffRows = []
+
+        for (let i = 1; i < lines.length; i++) {
+          const parts = lines[i].split(',')
+          if (parts.length < 2) continue
+          const fat = parseFloat(parts[0])
+          if (isNaN(fat)) continue
+
+          const rates = parts.slice(1).map(v => v.trim())
+          if (fat >= 3.5 && fat <= 5.0) {
+            parsedCowRows.push({ fat, rates })
+          } else if (fat >= 5.1 && fat <= 10.0) {
+            parsedBuffRows.push({ fat, rates })
+          }
+        }
+
+        const newCowGrid = COW_FAT_ROWS.map(fat =>
+          SNF_COLS.map(snf => {
+            const matchRow = parsedCowRows.find(r => Math.abs(r.fat - fat) < 0.05)
+            if (!matchRow) return ''
+            const csvColIdx = snfValues.indexOf(snf)
+            if (csvColIdx === -1) return ''
+            const val = matchRow.rates[csvColIdx]
+            return val !== undefined && val !== '' ? parseFloat(val).toFixed(2) : ''
+          })
+        )
+
+        const newBuffGrid = BUFF_FAT_ROWS.map(fat =>
+          SNF_COLS.map(snf => {
+            const matchRow = parsedBuffRows.find(r => Math.abs(r.fat - fat) < 0.05)
+            if (!matchRow) return ''
+            const csvColIdx = snfValues.indexOf(snf)
+            if (csvColIdx === -1) return ''
+            const val = matchRow.rates[csvColIdx]
+            return val !== undefined && val !== '' ? parseFloat(val).toFixed(2) : ''
+          })
+        )
+
+        setCowGrid(newCowGrid)
+        setBuffGrid(newBuffGrid)
+
+        setDirtySet(prev => {
+          const next = new Set(prev)
+          COW_FAT_ROWS.forEach(fat => {
+            SNF_COLS.forEach(snf => {
+              next.add(`${fat}_${snf}_cow`)
+            })
+          })
+          BUFF_FAT_ROWS.forEach(fat => {
+            SNF_COLS.forEach(snf => {
+              next.add(`${fat}_${snf}_buffalo`)
+            })
+          })
+          return next
+        })
+
+        toast.success('Imported Cow & Buffalo rates! Click "Save Changes" to save to the database.')
+      } catch (err) {
+        toast.error('Failed to parse CSV: ' + err.message)
+      } finally {
+        if (csvInputRef.current) csvInputRef.current.value = ''
+      }
+    }
+    reader.readAsText(file)
+  }
 
   // Cell change handler
   const handleChange = (ri, ci, val) => {
-    setGrid(prev => {
+    const isRowCow = ri < COW_FAT_ROWS.length
+    const localRi = isRowCow ? ri : ri - COW_FAT_ROWS.length
+    const targetGridSet = isRowCow ? setCowGrid : setBuffGrid
+    const rowType = isRowCow ? 'cow' : 'buffalo'
+    const rowFat = isRowCow ? COW_FAT_ROWS[localRi] : BUFF_FAT_ROWS[localRi]
+
+    targetGridSet(prev => {
       const next = prev.map(r => [...r])
-      next[ri][ci] = val
+      next[localRi][ci] = val
       return next
     })
-    const key = `${fatRows[ri]}_${SNF_COLS[ci]}_${tab}`
+    const key = `${rowFat.toFixed(1)}_${SNF_COLS[ci]}_${rowType}`
     setDirtySet(prev => new Set(prev).add(key))
   }
 
@@ -215,95 +339,156 @@ export default function RateList() {
   const fatThStyle = {
     ...thStyle, background: '#0F6E56', left: 0, zIndex: 3, minWidth: 64,
   }
-  const fatCellStyle = (fat) => ({
+  const fatCellStyle = (fat, highlightVal) => ({
     padding: '2px 8px', border: '1px solid #CBD5E1', textAlign: 'center',
-    fontSize: '0.72rem', fontWeight: fat === highlight ? 700 : 600,
-    color: fat === highlight ? '#B91C1C' : '#334155',
-    background: fat === highlight ? '#FEF2F2' : '#F1F5F9',
+    fontSize: '0.72rem', fontWeight: fat === highlightVal ? 700 : 600,
+    color: fat === highlightVal ? '#B91C1C' : '#334155',
+    background: fat === highlightVal ? '#FEF2F2' : '#F1F5F9',
     whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 1,
   })
 
-  const cellBg = (fat, isDirty) => {
+  const cellBg = (fat, isDirty, highlightVal) => {
     if (isDirty)         return '#FFFBEB'
-    if (fat === highlight) return '#FEF2F2'
+    if (fat === highlightVal) return '#FEF2F2'
     return 'white'
   }
 
-  const RateSheet = () => (
-    <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 260px)', border: '1px solid #94A3B8', borderRadius: 8 }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: '0.72rem', tableLayout: 'fixed', width: 'max-content' }}>
-        <thead>
-          <tr>
-            <th style={fatThStyle}>Fat &amp; SNF</th>
-            {SNF_COLS.map(s => (
-              <th key={s} style={{ ...thStyle, width: 76 }}>{(s / 10).toFixed(1)}</th>
-            ))}
+  const RateSheet = () => {
+    const renderRows = []
+    ALL_FAT_ROWS.forEach((fat, ri) => {
+      const isRowCow = ri < COW_FAT_ROWS.length
+      const localRi = isRowCow ? ri : ri - COW_FAT_ROWS.length
+      const rowGrid = isRowCow ? cowGrid : buffGrid
+      const rowType = isRowCow ? 'cow' : 'buffalo'
+      const highlightVal = isRowCow ? COW_HIGHLIGHT : BUFF_HIGHLIGHT
+
+      if (ri === 0) {
+        renderRows.push(
+          <tr key="cow-header-row" className="no-print" style={{ background: '#E2F0EC' }}>
+            <td colSpan={SNF_COLS.length + 1} style={{ padding: '6px 10px', fontWeight: 800, color: '#0F6E56', fontSize: '0.78rem' }}>
+              🐄 COW MILK RATES (FAT 3.5 – 5.0)
+            </td>
           </tr>
-        </thead>
-        <tbody>
-          {fatRows.map((fat, ri) => (
-            <tr key={fat}>
-              <td style={fatCellStyle(fat)}>{fat.toFixed(1)}</td>
-              {SNF_COLS.map((snf, ci) => {
-                const isDirty  = dirtySet.has(`${fat}_${snf}_${tab}`)
-                const isEditing = editCell?.ri === ri && editCell?.ci === ci
-                const val = grid[ri]?.[ci] ?? ''
-                return (
-                  <td
-                    key={snf}
-                    style={{
-                      padding: 0, border: '1px solid #CBD5E1',
-                      background: cellBg(fat, isDirty),
-                      outline: isEditing ? '2px solid #0F6E56' : 'none',
-                      outlineOffset: -2,
+        )
+      } else if (ri === COW_FAT_ROWS.length) {
+        renderRows.push(
+          <tr key="buff-header-row" className="no-print" style={{ background: '#E0F2FE' }}>
+            <td colSpan={SNF_COLS.length + 1} style={{ padding: '6px 10px', fontWeight: 800, color: '#0369A1', fontSize: '0.78rem' }}>
+              🐃 BUFFALO MILK RATES (FAT 5.1 – 10.0)
+            </td>
+          </tr>
+        )
+      }
+
+      renderRows.push(
+        <tr key={`${fat.toFixed(1)}_${rowType}`}>
+          <td style={fatCellStyle(fat, highlightVal)}>{fat.toFixed(1)}</td>
+          {SNF_COLS.map((snf, ci) => {
+            const isDirty = dirtySet.has(`${fat.toFixed(1)}_${snf}_${rowType}`)
+            const isEditing = editCell?.ri === ri && editCell?.ci === ci
+            const val = rowGrid[localRi]?.[ci] ?? ''
+            return (
+              <td
+                key={snf}
+                style={{
+                  padding: 0, border: '1px solid #CBD5E1',
+                  background: cellBg(fat, isDirty, highlightVal),
+                  outline: isEditing ? '2px solid #0F6E56' : 'none',
+                  outlineOffset: -2,
+                }}
+                onClick={() => setEditCell({ ri, ci })}
+              >
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    type="text"
+                    inputMode="decimal"
+                    value={val}
+                    onChange={e => {
+                      const value = e.target.value
+                      if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                        handleChange(ri, ci, value)
+                      }
                     }}
-                    onClick={() => setEditCell({ ri, ci })}
-                  >
-                    {isEditing ? (
-                      <input
-                        autoFocus
-                        type="number"
-                        step="0.01"
-                        value={val}
-                        onChange={e => handleChange(ri, ci, e.target.value)}
-                        onBlur={() => setEditCell(null)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' || e.key === 'Tab') {
-                            e.preventDefault()
-                            // Move to next cell
-                            const nextCi = ci + 1 < SNF_COLS.length ? ci + 1 : 0
-                            const nextRi = ci + 1 < SNF_COLS.length ? ri : ri + 1
-                            if (nextRi < fatRows.length) setEditCell({ ri: nextRi, ci: nextCi })
-                            else setEditCell(null)
-                          }
-                          if (e.key === 'Escape') setEditCell(null)
-                        }}
-                        style={{
-                          width: '100%', height: '100%', border: 'none', background: 'transparent',
-                          padding: '3px 6px', fontSize: '0.72rem', fontWeight: fat === highlight ? 700 : 400,
-                          color: fat === highlight ? '#B91C1C' : '#1E293B',
-                          textAlign: 'right', outline: 'none', boxSizing: 'border-box',
-                        }}
-                      />
-                    ) : (
-                      <div style={{
-                        padding: '3px 6px', textAlign: 'right', cursor: 'cell',
-                        fontWeight: fat === highlight ? 700 : 400,
-                        color: isDirty ? '#92400E' : fat === highlight ? '#B91C1C' : '#1E293B',
-                        minHeight: 22,
-                      }}>
-                        {val}
-                      </div>
-                    )}
-                  </td>
-                )
-              })}
+                    onBlur={() => setEditCell(null)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === 'Tab') {
+                        e.preventDefault()
+                        // Move to next cell
+                        const nextCi = ci + 1 < SNF_COLS.length ? ci + 1 : 0
+                        const nextRi = ci + 1 < SNF_COLS.length ? ri : ri + 1
+                        if (nextRi < ALL_FAT_ROWS.length) setEditCell({ ri: nextRi, ci: nextCi })
+                        else setEditCell(null)
+                      }
+                      if (e.key === 'Escape') setEditCell(null)
+
+                      // Arrow keys navigation
+                      if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        if (ri > 0) setEditCell({ ri: ri - 1, ci })
+                      }
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        if (ri < ALL_FAT_ROWS.length - 1) setEditCell({ ri: ri + 1, ci })
+                      }
+                      if (e.key === 'ArrowLeft') {
+                        const isStart = e.target.selectionStart === 0 && e.target.selectionEnd === 0
+                        if (isStart) {
+                          e.preventDefault()
+                          if (ci > 0) setEditCell({ ri, ci: ci - 1 })
+                        }
+                      }
+                      if (e.key === 'ArrowRight') {
+                        const valStr = String(val)
+                        const isEnd = e.target.selectionStart === valStr.length && e.target.selectionEnd === valStr.length
+                        if (isEnd) {
+                          e.preventDefault()
+                          if (ci < SNF_COLS.length - 1) setEditCell({ ri, ci: ci + 1 })
+                        }
+                      }
+                    }}
+                    style={{
+                      width: '100%', height: '100%', border: 'none', background: 'transparent',
+                      padding: '3px 6px', fontSize: '0.72rem', fontWeight: fat === highlightVal ? 700 : 400,
+                      color: fat === highlightVal ? '#B91C1C' : '#1E293B',
+                      textAlign: 'right', outline: 'none', boxSizing: 'border-box',
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    padding: '3px 6px', textAlign: 'right', cursor: 'cell',
+                    fontWeight: fat === highlightVal ? 700 : 400,
+                    color: isDirty ? '#92400E' : fat === highlightVal ? '#B91C1C' : '#1E293B',
+                    minHeight: 22,
+                  }}>
+                    {val}
+                  </div>
+                )}
+              </td>
+            )
+          })}
+        </tr>
+      )
+    })
+
+    return (
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 260px)', border: '1px solid #94A3B8', borderRadius: 8 }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: '0.72rem', tableLayout: 'fixed', width: 'max-content' }}>
+          <thead>
+            <tr>
+              <th style={fatThStyle}>Fat &amp; SNF</th>
+              {SNF_COLS.map(s => (
+                <th key={s} style={{ ...thStyle, width: 76 }}>{(s / 10).toFixed(1)}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
+          </thead>
+          <tbody>
+            {renderRows}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -318,6 +503,19 @@ export default function RateList() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <button className="btn-secondary" onClick={handleExportCSV} disabled={loading} title="Export current sheet as CSV">
+            <Download size={15} /> Export CSV
+          </button>
+          <button className="btn-secondary" onClick={() => csvInputRef.current?.click()} disabled={loading || saving} title="Import sheet from CSV">
+            <Upload size={15} /> Import CSV
+          </button>
+          <input
+            type="file"
+            accept=".csv"
+            ref={csvInputRef}
+            onChange={handleImportCSV}
+            style={{ display: 'none' }}
+          />
           <button className="btn-secondary" onClick={() => window.print()}>
             <Printer size={16} /> Print
           </button>
@@ -338,10 +536,9 @@ export default function RateList() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="no-print" style={{ display: 'flex', gap: 0, marginBottom: '1.25rem', borderBottom: '2px solid #E2E8F0' }}>
-        <button style={TAB_BTN(tab === 'cow')}     onClick={() => { setTab('cow');     setEditCell(null) }}>🐄 Cow Milk (3.5–5.0 FAT)</button>
-        <button style={TAB_BTN(tab === 'buffalo')} onClick={() => { setTab('buffalo'); setEditCell(null) }}>🐃 Buffalo Milk (5.1–10.0 FAT)</button>
+      {/* Description Info */}
+      <div className="no-print" style={{ marginBottom: '1.25rem', fontSize: '0.82rem', color: '#64748B' }}>
+        View and edit all purchase rates in one place. Cow rates apply for <strong>FAT 3.5 – 5.0</strong>, Buffalo rates apply for <strong>FAT 5.1 – 10.0</strong>.
       </div>
 
       {/* Legend */}
@@ -359,7 +556,7 @@ export default function RateList() {
 
       {/* Print header */}
       <div className="print-only" style={{ textAlign: 'center', marginBottom: '1rem', borderBottom: '2px solid #0F6E56', paddingBottom: '0.75rem' }}>
-        <h1 style={{ fontSize: '1.4rem', fontWeight: 800, margin: '0 0 0.2rem 0' }}>PURCHASE RATE LIST — {tab === 'cow' ? 'COW' : 'BUFFALO'} MILK</h1>
+        <h1 style={{ fontSize: '1.4rem', fontWeight: 800, margin: '0 0 0.2rem 0' }}>PURCHASE RATE LIST (COW &amp; BUFFALO)</h1>
         <p style={{ fontSize: '0.85rem', color: '#475569', margin: 0 }}>Rate List W.E.F. {new Date().toLocaleDateString('en-IN')}</p>
       </div>
 
