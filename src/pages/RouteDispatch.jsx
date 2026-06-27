@@ -205,13 +205,25 @@ export default function RouteDispatch() {
         }
       }
 
-      // If quantity, fat, clr, or cans changed, recalculate derived columns
-      if (field === 'quantity' || field === 'fat' || field === 'clr' || field === 'cans') {
-        const calcs = calculateRowValues(row.quantity, row.fat, row.clr)
-        row.snf = calcs.snf
-        row.kg_fat = calcs.kg_fat
-        row.kg_snf = calcs.kg_snf
+      // Calculate derived columns based on quantity, fat, clr, or snf
+      const qtyVal = parseFloat(row.quantity) || 0
+      const fatVal = parseFloat(row.fat) || 0
+      const clrVal = parseFloat(row.clr) || 0
+
+      // Calculate kg_fat
+      row.kg_fat = ((qtyVal * fatVal) / 100).toFixed(3)
+
+      if (field === 'clr' || field === 'fat' || field === 'quantity') {
+        // If we have a CLR, calculate SNF automatically
+        if (clrVal > 0) {
+          const calculatedSnf = clrVal / 4 + 0.21 * fatVal + 0.66
+          row.snf = calculatedSnf.toFixed(2)
+        }
       }
+
+      // Always calculate kg_snf based on the current row.snf and quantity
+      const currentSnf = parseFloat(row.snf) || 0
+      row.kg_snf = ((qtyVal * currentSnf) / 100).toFixed(3)
 
       updated[index] = row
       return updated
@@ -283,7 +295,8 @@ export default function RouteDispatch() {
         const qty = parseFloat(row.quantity) || 0
         const fat = parseFloat(row.fat) || 0
         const clr = parseFloat(row.clr) || 0
-        return qty > 0 && fat > 0 && clr > 0
+        const snf = parseFloat(row.snf) || 0
+        return qty > 0 && fat > 0 && (clr > 0 || snf > 0)
       })
 
       // 2. Prepare payload
@@ -694,9 +707,16 @@ export default function RouteDispatch() {
                             />
                           </td>
 
-                          {/* SNF (Calculated, Read-Only) */}
-                          <td style={{ padding: '0.5rem', border: '1px solid #CBD5E1', textAlign: 'right', fontWeight: '600', color: '#475569', background: '#F8FAFC' }}>
-                            {row.snf}
+                          {/* SNF (Editable) */}
+                          <td style={{ padding: 0, border: '1px solid #CBD5E1' }}>
+                            <input 
+                              type="number"
+                              step="0.01"
+                              className="grid-input text-right font-semibold"
+                              placeholder="0.00"
+                              value={row.snf}
+                              onChange={e => handleCellChange(index, 'snf', e.target.value)}
+                            />
                           </td>
 
                           {/* Kg Fat (Calculated, Read-Only) */}
