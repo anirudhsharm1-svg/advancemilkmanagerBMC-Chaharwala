@@ -12,6 +12,17 @@ const MILK_TYPES = [
   { value: 'l', label: 'l' }
 ]
 
+const getNextDateStr = (dateStr) => {
+  if (!dateStr) return ''
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const d = new Date(year, month - 1, day)
+  d.setDate(d.getDate() + 1)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const rDay = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${rDay}`
+}
+
 export default function RouteDispatch() {
   const [activeTab, setActiveTab] = useState('entry') // 'entry' or 'settings'
   const [routes, setRoutes] = useState([])
@@ -41,6 +52,57 @@ export default function RouteDispatch() {
   const [summaryShift, setSummaryShift] = useState('morning')
   const [summaryData, setSummaryData] = useState([])
   const [summaryLoading, setSummaryLoading] = useState(false)
+
+  // Outward Sell/Dispatch Reconciliation state
+  const [dispatchSell, setDispatchSell] = useState({ qty: '', fat: '', clr: '', snf: '' })
+  const [modalDispatch, setModalDispatch] = useState({ qty: '', fat: '', clr: '', snf: '' })
+  const [isReconciliationModalOpen, setIsReconciliationModalOpen] = useState(false)
+
+  // Load saved outward dispatch/sales info
+  useEffect(() => {
+    const key = `dispatch_sell_${summaryDate}_${summaryShift}`
+    const saved = localStorage.getItem(key)
+    if (saved) {
+      try {
+        setDispatchSell(JSON.parse(saved))
+      } catch (e) {
+        setDispatchSell({ qty: '', fat: '', clr: '', snf: '' })
+      }
+    } else {
+      setDispatchSell({ qty: '', fat: '', clr: '', snf: '' })
+    }
+  }, [summaryDate, summaryShift])
+
+  const handleOpenReconciliationModal = () => {
+    setModalDispatch(dispatchSell)
+    setIsReconciliationModalOpen(true)
+  }
+
+  const handleModalDispatchChange = (field, value) => {
+    setModalDispatch(prev => {
+      const updated = { ...prev, [field]: value }
+      
+      const qtyVal = parseFloat(updated.qty) || 0
+      const fatVal = parseFloat(updated.fat) || 0
+      const clrVal = parseFloat(updated.clr) || 0
+
+      if (field === 'clr' || field === 'fat') {
+        if (clrVal > 0) {
+          const calculatedSnf = clrVal / 4 + 0.21 * fatVal + 0.66
+          updated.snf = calculatedSnf.toFixed(2)
+        }
+      }
+      return updated
+    })
+  }
+
+  const handleSaveModalDispatch = () => {
+    setDispatchSell(modalDispatch)
+    const key = `dispatch_sell_${summaryDate}_${summaryShift}`
+    localStorage.setItem(key, JSON.stringify(modalDispatch))
+    setIsReconciliationModalOpen(false)
+    toast.success('Outward dispatch updated successfully!')
+  }
 
   // Edit Route state
   const [editingRouteId, setEditingRouteId] = useState(null)
@@ -344,6 +406,37 @@ export default function RouteDispatch() {
     }
   }
 
+  // Clear the spreadsheet data (deletes from DB and resets UI)
+  const handleClearSpreadsheet = async () => {
+    if (!selectedRouteId) return
+    const routeName = routes.find(r => r.id === selectedRouteId)?.name || 'this route'
+    const confirmMsg = `Are you sure you want to clear all dispatch data for "${routeName}" on ${formatDate(selectedDate)} (${selectedShift})? This will delete all entries from the database.`
+    
+    if (!window.confirm(confirmMsg)) return
+
+    setSaving(true)
+    const toastId = toast.loading('Clearing Dispatch Sheet...')
+
+    try {
+      const { error } = await supabase
+        .from('route_dispatches')
+        .delete()
+        .eq('route_id', selectedRouteId)
+        .eq('date', selectedDate)
+        .eq('shift', selectedShift)
+
+      if (error) throw error
+
+      toast.success('Spreadsheet cleared successfully!', { id: toastId })
+      loadSpreadsheet()
+    } catch (err) {
+      console.error(err)
+      toast.error(err.message || 'Failed to clear spreadsheet', { id: toastId })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Settings: Add Route
   const handleAddRoute = async (e) => {
     e.preventDefault()
@@ -453,11 +546,19 @@ export default function RouteDispatch() {
   // Fetch All Routes Summary
   const fetchAllRoutesSummary = async () => {
     setSummaryLoading(true)
-    const { data, error } = await supabase
+    
+    let query = supabase
       .from('route_dispatches')
       .select('*, routes(name, code)')
-      .eq('date', summaryDate)
-      .eq('shift', summaryShift)
+
+    if (summaryShift === 'both') {
+      const nextDate = getNextDateStr(summaryDate)
+      query = query.in('date', [summaryDate, nextDate])
+    } else {
+      query = query.eq('date', summaryDate).eq('shift', summaryShift)
+    }
+
+    const { data, error } = await query
 
     if (error) {
       toast.error(error.message)
@@ -467,7 +568,16 @@ export default function RouteDispatch() {
 
     // Group by route
     const byRoute = {}
+    const nextDate = getNextDateStr(summaryDate)
     ;(data || []).forEach(row => {
+      if (summaryShift === 'both') {
+        const isEveningOfCurrent = row.date === summaryDate && row.shift === 'evening'
+        const isMorningOfNext = row.date === nextDate && row.shift === 'morning'
+        if (!isEveningOfCurrent && !isMorningOfNext) {
+          return // Skip other shifts/dates in the query result
+        }
+      }
+      
       const routeId = row.route_id
       if (!byRoute[routeId]) {
         byRoute[routeId] = {
@@ -580,6 +690,14 @@ export default function RouteDispatch() {
             </div>
 
             <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button 
+                className="btn-secondary" 
+                onClick={handleClearSpreadsheet} 
+                disabled={saving || loading || gridRows.length === 0} 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#DC2626', borderColor: '#FCA5A5' }}
+              >
+                <Trash2 size={16} /> Clear Sheet
+              </button>
               <button className="btn-secondary" onClick={() => window.print()}>
                 <Printer size={16} /> Print Sheet
               </button>
@@ -787,13 +905,21 @@ export default function RouteDispatch() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                 <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748B' }}>Shift</label>
-                <select className="input" style={{ width: 130 }} value={summaryShift} onChange={e => setSummaryShift(e.target.value)}>
+                <select className="input" style={{ width: 220 }} value={summaryShift} onChange={e => setSummaryShift(e.target.value)}>
                   <option value="morning">Morning</option>
                   <option value="evening">Evening</option>
+                  <option value="both">Combined Cycle (Evening + Next Morning)</option>
                 </select>
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button 
+                className="btn-secondary" 
+                onClick={handleOpenReconciliationModal}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', borderColor: '#0F6E56', color: '#0F6E56' }}
+              >
+                <Truck size={16} /> Outward Dispatch
+              </button>
               <button className="btn-secondary" onClick={() => window.print()}>
                 <Printer size={16} /> Print
               </button>
@@ -807,7 +933,9 @@ export default function RouteDispatch() {
           <div className="print-only" style={{ textAlign: 'center', marginBottom: '1.5rem', borderBottom: '2px solid #0F6E56', paddingBottom: '1rem' }}>
             <h1 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#1A2332', margin: '0 0 0.25rem 0' }}>Vitta Sahawa Dairy</h1>
             <h2 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#475569', margin: '0 0 0.25rem 0' }}>All Routes Milk Dispatch Summary</h2>
-            <p style={{ fontSize: '1.0rem', fontWeight: 700, color: '#64748B', margin: 0 }}>Date: {formatDate(summaryDate)} | Shift: {summaryShift.toUpperCase()}</p>
+            <p style={{ fontSize: '1.0rem', fontWeight: 700, color: '#64748B', margin: 0 }}>
+              Date: {formatDate(summaryDate)} {summaryShift === 'both' ? `to ${formatDate(getNextDateStr(summaryDate))}` : ''} | Shift: {summaryShift === 'both' ? 'COMBINED CYCLE (EVENING + NEXT MORNING)' : summaryShift.toUpperCase()}
+            </p>
           </div>
 
           {summaryLoading ? (
@@ -828,51 +956,168 @@ export default function RouteDispatch() {
             const grandAvgClr = grandQty > 0 ? grandWClr / grandQty : 0
             const grandAvgSnf = grandQty > 0 ? grandWSnf / grandQty : 0
             return (
-              <div className="card" style={{ padding: 0, border: '1px solid #CBD5E1', borderRadius: 8, overflow: 'hidden' }}>
-                <div className="table-container" style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-                    <thead>
-                      <tr style={{ background: '#0F6E56', color: 'white', fontWeight: 700 }}>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'left' }}>Route</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'center' }}>Code</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Cans</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Qty (L)</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg FAT</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg CLR</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg SNF</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg FAT</th>
-                        <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg SNF</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summaryData.map((r, i) => (
-                        <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#F8FAFC' }}>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', fontWeight: 700, color: '#1E293B' }}>{r.routeName}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'center', color: '#475569' }}>{r.routeCode}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.cans}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700 }}>{r.qty.toFixed(1)}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgFat.toFixed(2)}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgClr.toFixed(1)}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgSnf.toFixed(2)}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgFat.toFixed(3)}</td>
-                          <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgSnf.toFixed(3)}</td>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div className="card" style={{ padding: 0, border: '1px solid #CBD5E1', borderRadius: 8, overflow: 'hidden' }}>
+                  <div className="table-container" style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                      <thead>
+                        <tr style={{ background: '#0F6E56', color: 'white', fontWeight: 700 }}>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'left' }}>Route</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'center' }}>Code</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Cans</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Qty (L)</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg FAT</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg CLR</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Avg SNF</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg FAT</th>
+                          <th style={{ padding: '0.75rem 1rem', border: '1px solid #0A5240', textAlign: 'right' }}>Kg SNF</th>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr style={{ background: '#1E293B', color: 'white', fontWeight: 800, borderTop: '3px solid #0F6E56' }}>
-                        <td colSpan={2} style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'center', letterSpacing: '0.05em' }}>🏁 GRAND TOTAL</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandCans}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandQty.toFixed(1)}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgFat.toFixed(2)}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgClr.toFixed(1)}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgSnf.toFixed(2)}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgFat.toFixed(3)}</td>
-                        <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgSnf.toFixed(3)}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {summaryData.map((r, i) => (
+                          <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#F8FAFC' }}>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', fontWeight: 700, color: '#1E293B' }}>{r.routeName}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'center', color: '#475569' }}>{r.routeCode}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.cans}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700 }}>{r.qty.toFixed(1)}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgFat.toFixed(2)}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgClr.toFixed(1)}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right' }}>{r.avgSnf.toFixed(2)}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgFat.toFixed(3)}</td>
+                            <td style={{ padding: '0.65rem 1rem', border: '1px solid #E2E8F0', textAlign: 'right', fontWeight: 700, color: '#0F6E56' }}>{r.kgSnf.toFixed(3)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: '#1E293B', color: 'white', fontWeight: 800, borderTop: '3px solid #0F6E56' }}>
+                          <td colSpan={2} style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'center', letterSpacing: '0.05em' }}>🏁 GRAND TOTAL</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandCans}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandQty.toFixed(1)}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgFat.toFixed(2)}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgClr.toFixed(1)}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right' }}>{grandAvgSnf.toFixed(2)}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgFat.toFixed(3)}</td>
+                          <td style={{ padding: '0.75rem 1rem', border: '1px solid #374151', textAlign: 'right', color: '#34D399' }}>{grandKgSnf.toFixed(3)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
+
+                {/* Outward Dispatch / Sales Reconciliation */}
+                {!(parseFloat(dispatchSell.qty) > 0) ? (
+                  <div className="card no-print" style={{ padding: '1.5rem', textAlign: 'center', background: '#F8FAFC', border: '1px dotted #CBD5E1', borderRadius: 8 }}>
+                    <p style={{ color: '#64748B', marginBottom: '0.75rem' }}>No outward dispatch/sales data entered for this shift/date yet.</p>
+                    <button className="btn-primary" onClick={handleOpenReconciliationModal} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', margin: '0 auto' }}>
+                      <Plus size={14} /> Enter Outward Dispatch
+                    </button>
+                  </div>
+                ) : (
+                  <div className="card" style={{ padding: '1.5rem', background: '#F8FAFC', border: '1px solid #CBD5E1', borderRadius: 8 }}>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#0F6E56', marginBottom: '1rem', borderBottom: '2px solid #E2E8F0', paddingBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'space-between' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>🚚 Outward Dispatch / Sales Reconciliation (आगे भेजा हुआ दूध का मिलान)</span>
+                      <div className="no-print" style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button className="btn-secondary btn-sm" onClick={handleOpenReconciliationModal} style={{ padding: '4px 10px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                          <Pencil size={12} /> Edit Details
+                        </button>
+                        <button className="btn-secondary btn-sm" onClick={() => {
+                          setDispatchSell({ qty: '', fat: '', clr: '', snf: '' });
+                          const key = `dispatch_sell_${summaryDate}_${summaryShift}`;
+                          localStorage.removeItem(key);
+                        }} style={{ padding: '4px 10px', fontSize: '0.8rem', color: '#DC2626', borderColor: '#FCA5A5', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                          <Trash2 size={12} /> Clear
+                        </button>
+                      </div>
+                    </h3>
+                    
+                    <div style={{ width: '100%' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '2px solid #CBD5E1', color: '#64748B', fontWeight: 'bold' }}>
+                            <th style={{ textAlign: 'left', padding: '0.5rem 0' }}>Parameter</th>
+                            <th style={{ textAlign: 'right', padding: '0.5rem 0' }}>Collected (BMC)</th>
+                            <th style={{ textAlign: 'right', padding: '0.5rem 0' }}>Dispatched (Sold)</th>
+                            <th style={{ textAlign: 'right', padding: '0.5rem 0' }}>Difference (Loss/Gain)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
+                            <td style={{ padding: '0.5rem 0', fontWeight: '600' }}>Quantity (L)</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{grandQty.toFixed(1)}</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{(parseFloat(dispatchSell.qty) || 0).toFixed(1)}</td>
+                            <td style={{ 
+                              textAlign: 'right', 
+                              padding: '0.5rem 0', 
+                              fontWeight: '700', 
+                              color: ((parseFloat(dispatchSell.qty) || 0) - grandQty) >= 0 ? '#16A34A' : '#DC2626' 
+                            }}>
+                              {(((parseFloat(dispatchSell.qty) || 0) - grandQty) >= 0 ? '+' : '')}{((parseFloat(dispatchSell.qty) || 0) - grandQty).toFixed(1)} L
+                              <span style={{ fontSize: '0.75rem', fontWeight: 'normal', marginLeft: '0.25rem', color: '#64748B' }}>
+                                ({grandQty > 0 ? ((( (parseFloat(dispatchSell.qty) || 0) - grandQty ) / grandQty) * 100).toFixed(2) : 0}%)
+                              </span>
+                            </td>
+                          </tr>
+
+                          <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
+                            <td style={{ padding: '0.5rem 0', fontWeight: '600' }}>Avg FAT (%)</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{grandAvgFat.toFixed(2)}</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{(parseFloat(dispatchSell.fat) || 0).toFixed(2)}</td>
+                            <td style={{ 
+                              textAlign: 'right', 
+                              padding: '0.5rem 0', 
+                              fontWeight: '700', 
+                              color: ((parseFloat(dispatchSell.fat) || 0) - grandAvgFat) >= 0 ? '#16A34A' : '#DC2626' 
+                            }}>
+                              {(((parseFloat(dispatchSell.fat) || 0) - grandAvgFat) >= 0 ? '+' : '')}{((parseFloat(dispatchSell.fat) || 0) - grandAvgFat).toFixed(2)}%
+                            </td>
+                          </tr>
+
+                          <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
+                            <td style={{ padding: '0.5rem 0', fontWeight: '600' }}>Avg SNF (%)</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{grandAvgSnf.toFixed(2)}</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{(parseFloat(dispatchSell.snf) || 0).toFixed(2)}</td>
+                            <td style={{ 
+                              textAlign: 'right', 
+                              padding: '0.5rem 0', 
+                              fontWeight: '700', 
+                              color: ((parseFloat(dispatchSell.snf) || 0) - grandAvgSnf) >= 0 ? '#16A34A' : '#DC2626' 
+                            }}>
+                              {(((parseFloat(dispatchSell.snf) || 0) - grandAvgSnf) >= 0 ? '+' : '')}{((parseFloat(dispatchSell.snf) || 0) - grandAvgSnf).toFixed(2)}%
+                            </td>
+                          </tr>
+
+                          <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
+                            <td style={{ padding: '0.5rem 0', fontWeight: '600' }}>Total FAT (Kg)</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{grandKgFat.toFixed(3)}</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.fat) || 0) / 100).toFixed(3)}</td>
+                            <td style={{ 
+                              textAlign: 'right', 
+                              padding: '0.5rem 0', 
+                              fontWeight: '700', 
+                              color: (((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.fat) || 0) / 100) - grandKgFat) >= 0 ? '#16A34A' : '#DC2626' 
+                            }}>
+                              {((((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.fat) || 0) / 100) - grandKgFat) >= 0 ? '+' : '')}{(((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.fat) || 0) / 100) - grandKgFat).toFixed(3)} Kg
+                            </td>
+                          </tr>
+
+                          <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
+                            <td style={{ padding: '0.5rem 0', fontWeight: '600' }}>Total SNF (Kg)</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{grandKgSnf.toFixed(3)}</td>
+                            <td style={{ textAlign: 'right', padding: '0.5rem 0' }}>{((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.snf) || 0) / 100).toFixed(3)}</td>
+                            <td style={{ 
+                              textAlign: 'right', 
+                              padding: '0.5rem 0', 
+                              fontWeight: '700', 
+                              color: (((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.snf) || 0) / 100) - grandKgSnf) >= 0 ? '#16A34A' : '#DC2626' 
+                            }}>
+                              {((((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.snf) || 0) / 100) - grandKgSnf) >= 0 ? '+' : '')}{(((parseFloat(dispatchSell.qty) || 0) * (parseFloat(dispatchSell.snf) || 0) / 100) - grandKgSnf).toFixed(3)} Kg
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })()}
@@ -1174,6 +1419,129 @@ export default function RouteDispatch() {
           confirmLabel="Delete" 
         />
       )}
+
+      {/* Outward Dispatch Entry Modal */}
+      {isReconciliationModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          backdropFilter: 'blur(4px)'
+        }}>
+          <div className="card" style={{
+            width: '95%',
+            maxWidth: '500px',
+            background: 'white',
+            borderRadius: '12px',
+            padding: '1.75rem',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            position: 'relative'
+          }}>
+            <button 
+              onClick={() => setIsReconciliationModalOpen(false)}
+              style={{
+                position: 'absolute',
+                top: '1rem',
+                right: '1rem',
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                color: '#64748B'
+              }}
+            >
+              <X size={20} />
+            </button>
+
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: '#0F6E56', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              🚚 Outward Dispatch Entry (बिक्री की प्रविष्टि)
+            </h3>
+
+            <p style={{ fontSize: '0.85rem', color: '#64748B', marginBottom: '1.25rem' }}>
+              Enter the milk quantity and quality parameters sent to the dairy plant.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569' }}>Dispatched Qty (Liters)</label>
+                <input 
+                  type="number" 
+                  className="input" 
+                  placeholder="0.0" 
+                  step="0.1"
+                  value={modalDispatch.qty}
+                  onChange={e => handleModalDispatchChange('qty', e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569' }}>Dispatched FAT (%)</label>
+                <input 
+                  type="number" 
+                  className="input" 
+                  placeholder="0.0" 
+                  step="0.1"
+                  value={modalDispatch.fat}
+                  onChange={e => handleModalDispatchChange('fat', e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569' }}>Dispatched CLR</label>
+                <input 
+                  type="number" 
+                  className="input" 
+                  placeholder="0.0" 
+                  step="0.1"
+                  value={modalDispatch.clr}
+                  onChange={e => handleModalDispatchChange('clr', e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569' }}>Dispatched SNF (%)</label>
+                <input 
+                  type="number" 
+                  className="input" 
+                  placeholder="0.00" 
+                  step="0.01"
+                  value={modalDispatch.snf}
+                  onChange={e => handleModalDispatchChange('snf', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div style={{ background: '#F1F5F9', padding: '0.75rem', borderRadius: '6px', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
+              <strong>Calculated Outward Totals:</strong>
+              <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.25rem' }}>
+                <div>Kg FAT: <strong>{((parseFloat(modalDispatch.qty) || 0) * (parseFloat(modalDispatch.fat) || 0) / 100).toFixed(3)}</strong></div>
+                <div>Kg SNF: <strong>{((parseFloat(modalDispatch.qty) || 0) * (parseFloat(modalDispatch.snf) || 0) / 100).toFixed(3)}</strong></div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'end' }}>
+              <button 
+                className="btn-secondary" 
+                onClick={() => setIsReconciliationModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn-primary"
+                onClick={handleSaveModalDispatch}
+              >
+                Calculate & Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1217,6 +1585,9 @@ style.innerHTML = `
     .grid-input::-webkit-inner-spin-button {
       -webkit-appearance: none;
       margin: 0;
+    }
+    .reconciliation-grid {
+      grid-template-columns: 1fr !important;
     }
   }
 `

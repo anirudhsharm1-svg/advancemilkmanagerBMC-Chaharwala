@@ -8,7 +8,7 @@ import { Printer, TableProperties, Save, RefreshCw, Download, Upload } from 'luc
 const SNF_COLS = [92, 91, 90, 89, 88, 87, 86, 85, 84, 83, 82]
 
 // FAT rows
-const COW_FAT_ROWS  = Array.from({ length: 16 }, (_, i) => +(3.5 + i * 0.1).toFixed(1))
+const COW_FAT_ROWS  = Array.from({ length: 21 }, (_, i) => +(3.0 + i * 0.1).toFixed(1))
 const BUFF_FAT_ROWS = Array.from({ length: 50 }, (_, i) => +(5.1 + i * 0.1).toFixed(1))
 
 const COW_HIGHLIGHT  = 4.3
@@ -199,7 +199,7 @@ export default function RateList() {
           if (isNaN(fat)) continue
 
           const rates = parts.slice(1).map(v => v.trim())
-          if (fat >= 3.5 && fat <= 5.0) {
+          if (fat >= 3.0 && fat <= 5.0) {
             parsedCowRows.push({ fat, rates })
           } else if (fat >= 5.1 && fat <= 10.0) {
             parsedBuffRows.push({ fat, rates })
@@ -366,7 +366,7 @@ export default function RateList() {
         renderRows.push(
           <tr key="cow-header-row" className="no-print" style={{ background: '#E2F0EC' }}>
             <td colSpan={SNF_COLS.length + 1} style={{ padding: '6px 10px', fontWeight: 800, color: '#0F6E56', fontSize: '0.78rem' }}>
-              🐄 COW MILK RATES (FAT 3.5 – 5.0)
+              🐄 COW MILK RATES (FAT 3.0 – 5.0)
             </td>
           </tr>
         )
@@ -538,7 +538,7 @@ export default function RateList() {
 
       {/* Description Info */}
       <div className="no-print" style={{ marginBottom: '1.25rem', fontSize: '0.82rem', color: '#64748B' }}>
-        View and edit all purchase rates in one place. Cow rates apply for <strong>FAT 3.5 – 5.0</strong>, Buffalo rates apply for <strong>FAT 5.1 – 10.0</strong>.
+        View and edit all purchase rates in one place. Cow rates apply for <strong>FAT 3.0 – 5.0</strong>, Buffalo rates apply for <strong>FAT 5.1 – 10.0</strong>.
       </div>
 
       {/* Legend */}
